@@ -14,13 +14,24 @@ pub struct RunningProcess {
 impl RunningProcess{
 
     /* Launch the specified process
+     * args are optional thats why they are an option
      * TODO: manage the std err
      */
-    pub fn new(path: String) -> Result<RunningProcess, Box<std::error::Error>>{
-        let p = Command::new(path) // Launchin the process
-            .stdout(Stdio::piped())
-            .stdin(Stdio::piped())
-            .spawn();
+    pub fn new(path: String, args: Option<Vec<String>>) -> Result<RunningProcess, Box<dyn std::error::Error>>{
+        // Creating the setup for the process
+        let mut setup_p = Command::new(path);
+
+        // Setup stdio
+        setup_p.stdout(Stdio::piped())
+            .stdin(Stdio::piped());
+
+        // Add args if present
+        if let Some(x) = args {
+            setup_p.args(x);
+        }
+            
+        // startiung the process
+        let p = setup_p.spawn();
 
         let mut child = p?; // std::io::Error
         /* Passing the stdout of the process to a thread whose sole purpose is to gather it and send it in the channel that it was given
@@ -67,7 +78,7 @@ fn gather_output(stdout: ChildStdout, out_send: mpsc::Sender<String>){
 
             Ok(l) => {
                 match out_send.send(l) { // Managing if coudnt send a line
-                    Err(e) => (), // TODO: manage this possible error
+                    Err(_) => (), // TODO: manage this possible error
 
                     Ok(_) => (), // Success
                 }
@@ -88,37 +99,47 @@ fn send_input(mut stdin: ChildStdin, in_recieve: mpsc::Receiver<String>) {
     };
 }
 
-/* Tests
-fn test{
-    let rn = running_process::RunningProcess::new(String::from("./parrot")).unwrap();
-    // Spawning a thread that output the stdout
-    let reciever = rn.recive_out;
-    std::thread::spawn(move || {     
-        println!("---> Recieving <---");
-        for recived in reciever{
-            println!("Recived: {}", recived);
+// Tests
+#[cfg(test)]
+mod test{
+
+    use super::*;
+
+    #[test]
+    fn parrot_test(){
+        let cmd = String::from("./parrot");
+        let rn = RunningProcess::new(cmd, None).unwrap();
+        // Words to feed to the parrot
+        let mut parrot_words: Vec<String> = vec![String::from("hello"), String::from("ciao")];
+        parrot_words.push(String::from("stop")); // key word to stop the parrot
+        // Sending some words to the parrot
+        for word in parrot_words.clone(){
+            match rn.send_in.send(format!("{}\r\n", word)){
+                Err(e) => println!("Sending error: {}", e),
+                Ok(_) => (),
+            };
+        }; 
+        // Recieving and checking the parrots output
+        let mut i = 0;
+        for recieved in rn.recive_out{
+            assert_eq!(format!("{}", recieved), format!("Readed: {}", parrot_words[i]));
+            i = i + 1;
         };
-    });
-    // Sending some input
-    println!("---> Sending <---");
-    let lines = BufReader::new(std::io::stdin()).lines();
-    for line in lines {
-        match line {
-            Err(_) => (),
-            Ok(l) => {
-                if l == String::from("stop"){
-                    break;
-                };
-                let message = format!("{}\r", l);
-                match rn.send_in.send(message) {
-                    Err(_) => (),
-                    Ok(_) => (),
-                };
-                match rn.send_in.send(String::from("\n")) {
-                    Err(_) => (),
-                    Ok(_) => (),
-                };
-            },
-        };
-    };
-}*/
+    }// parrot_test 
+
+    #[test]
+    fn echo_test(){
+        // echo comands
+        let cmd = String::from("echo");
+        // echo args
+        let mut args: Vec<String> = Vec::new();
+        args.push(String::from("hello"));
+        args.push(String::from("world"));
+        let rn = RunningProcess::new(cmd, Some(args)).unwrap();
+        let reciever = rn.recive_out;
+        for recieved in reciever {
+            assert_eq!(String::from("hello world"), recieved);
+        }
+    }// echo_test
+
+}// Tests
