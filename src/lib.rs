@@ -142,9 +142,9 @@ fn gather_output<T: Read>(std: T, pipe_send: mpsc::Sender<String>) {
             Ok(l) => {
                 match pipe_send.send(l) {
                     // Managing if coudnt send a line
-                    Err(_) => (), // TODO: manage this possible error
-
-                    Ok(_) => (), // Success
+                    // For now we will assume that if there is an error is because the pipe was closed
+                    Err(_) => break, // TODO: manage this possible error, if it doesn't work, the pipe is closed? https://doc.rust-lang.org/std/sync/mpsc/struct.RecvError.html
+                    Ok(_) => (),     // Success
                 }
             }
         }
@@ -165,7 +165,7 @@ fn send_input(mut stdin: ChildStdin, in_recieve: mpsc::Receiver<String>) {
 
 // Implementing what happen when the dtruct is removed from the memory
 impl Drop for RunningProcess {
-    fn drop(&mut self){
+    fn drop(&mut self) {
         // If they exist, close the pipes
         match self.stdin.take() {
             Some(pipe) => drop(pipe),
@@ -180,31 +180,32 @@ impl Drop for RunningProcess {
             None => (),
         }
         // Use the handles to wait for the end of each thread
+        println!("waiting");
         match self.handle_input.take() {
             Some(handle) => {
                 match handle.join() {
                     Ok(_) => println!("Input thread stopped"),
-                    Err(_) => println!("Could not joinb the input thread"),
+                    Err(_) => println!("Could not join the input thread"),
                 };
-            },
+            }
             None => (),
         }
         match self.handle_output.take() {
             Some(handle) => {
                 match handle.join() {
                     Ok(_) => println!("Output thread stopped"),
-                    Err(_) => println!("Could not joinb the output thread"),
+                    Err(_) => println!("Could not join the output thread"),
                 };
-            },
+            }
             None => (),
         }
         match self.handle_error.take() {
             Some(handle) => {
                 match handle.join() {
                     Ok(_) => println!("Input thread stopped"),
-                    Err(_) => println!("Could not joinb the input thread"),
+                    Err(_) => println!("Could not join the error thread"),
                 };
-            },
+            }
             None => (),
         }
     }
