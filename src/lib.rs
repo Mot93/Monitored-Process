@@ -91,6 +91,8 @@ impl RunningProcess {
             }
         };
 
+        // TODO: implement a check that waits for the input and output trhead to be ready
+
         // Returning struct
         Ok(RunningProcess {
             process: child,
@@ -158,6 +160,53 @@ fn send_input(mut stdin: ChildStdin, in_recieve: mpsc::Receiver<String>) {
             Err(_) => (),
             Ok(_) => (),
         };
+    }
+}
+
+// Implementing what happen when the dtruct is removed from the memory
+impl Drop for RunningProcess {
+    fn drop(&mut self){
+        // If they exist, close the pipes
+        match self.stdin.take() {
+            Some(pipe) => drop(pipe),
+            None => (),
+        }
+        match self.stdout.take() {
+            Some(pipe) => drop(pipe),
+            None => (),
+        }
+        match self.stderr.take() {
+            Some(pipe) => drop(pipe),
+            None => (),
+        }
+        // Use the handles to wait for the end of each thread
+        match self.handle_input.take() {
+            Some(handle) => {
+                match handle.join() {
+                    Ok(_) => println!("Input thread stopped"),
+                    Err(_) => println!("Could not joinb the input thread"),
+                };
+            },
+            None => (),
+        }
+        match self.handle_output.take() {
+            Some(handle) => {
+                match handle.join() {
+                    Ok(_) => println!("Output thread stopped"),
+                    Err(_) => println!("Could not joinb the output thread"),
+                };
+            },
+            None => (),
+        }
+        match self.handle_error.take() {
+            Some(handle) => {
+                match handle.join() {
+                    Ok(_) => println!("Input thread stopped"),
+                    Err(_) => println!("Could not joinb the input thread"),
+                };
+            },
+            None => (),
+        }
     }
 }
 

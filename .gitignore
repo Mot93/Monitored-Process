@@ -329,5 +329,5 @@ ASALocalRun/
 # MFractors (Xamarin productivity tool) working folder 
 .mfractor/
 
-# Ignore bin and content
+# This is a library, ignoring the binary made out of it
 bin/*
