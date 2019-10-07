@@ -1,17 +1,22 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
-/// Struct containing the necessary to manage the
+/// Struct containing the necessary to manage the process
 pub struct RunningProcess {
     process: Child,
+    /// Pipe that recieve the process stdout
     pub stdout: Option<mpsc::Receiver<String>>,
     handle_output: Option<thread::JoinHandle<()>>,
+    /// Pipe that recieve the process stderr
     pub stderr: Option<mpsc::Receiver<String>>,
     handle_error: Option<thread::JoinHandle<()>>,
+    ///
     pub stdin: Option<mpsc::Sender<String>>,
     handle_input: Option<thread::JoinHandle<()>>,
+    /// shared state about the current state of the process life
+    is_alive: Arc<Mutex<bool>>,
 }
 
 impl RunningProcess {
@@ -80,12 +85,14 @@ impl RunningProcess {
          * If for any reason the stdin is also needed elsewhere, it can always be implemented in the struct RunninProcess and borrowed from there
          * In case te process hasn't returned stdout, just return none TODO: should be an error
          * */
+        let is_alive = Arc::new(Mutex::new(true));
+        let is_alive_link = Arc::clone(&is_alive);
         let (in_send, handle_in) = match child.stdin.take() {
             None => (None, None), // TODO: return Error, not panic
             Some(stdin) => {
                 let (in_send, in_recieve) = mpsc::channel();
                 let handle_in = thread::spawn(move || {
-                    send_input(stdin, in_recieve);
+                    send_input(stdin, in_recieve, is_alive_link);
                 });
                 (Some(in_send), Some(handle_in))
             }
@@ -102,11 +109,15 @@ impl RunningProcess {
             handle_error: handle_err,
             stdin: in_send,
             handle_input: handle_in,
+            is_alive: is_alive,
         })
     } // new
 
     /// Kills the process if it's still running
     pub fn kill(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // TODO: manage lock
+        let mut is_alive = self.is_alive().lock().unwrap();
+        is_alive = false;
         Ok(self.process.kill()?)
     }
 
@@ -118,14 +129,21 @@ impl RunningProcess {
     /// Attempt to return the exit status of the child if it has already exited
     pub fn is_alive(&mut self) -> Result<Option<ExitStatus>, Box<dyn std::error::Error>> {
         match self.process.try_wait() {
-            Err(e) => Err(Box::new(e)),
+            Err(e) => panic!(Box::new(e)), //TODO: bad panic
             Ok(some) => Ok(some),
         }
     }
 
     /// Wait for the process to end, return the exit code
     pub fn wait(&mut self) -> std::io::Result<ExitStatus> {
-        self.process.wait()
+        let result = self.process.wait();
+        // Need to update is alive for the stdin
+        // TODO: bad panic
+        match self.is_alive.lock() {
+            Err(e) => panic!("Can't lock: {}", e),
+            Ok(mut guard) => *guard = false,
+        };
+        result
     }
 } // impl RunninProcess
 
@@ -149,17 +167,35 @@ fn gather_output<T: Read>(std: T, pipe_send: mpsc::Sender<String>) {
             }
         }
     } // end for
+    println!("closed reciever");
 }
 
 /// Recieve the stdin of the process and feeds it into the process
 /// It's meant to be executed by a thread
-fn send_input(mut stdin: ChildStdin, in_recieve: mpsc::Receiver<String>) {
-    for recieved in in_recieve {
-        match stdin.write_all(recieved.as_bytes()) {
-            // TODO: need to manages errors
+fn send_input(
+    mut stdin: ChildStdin,
+    in_recieve: mpsc::Receiver<String>,
+    is_alive: Arc<Mutex<bool>>,
+) {
+    loop {
+        match in_recieve.try_recv() {
+            Ok(recieved) => {
+                match stdin.write_all(recieved.as_bytes()) {
+                    // TODO: need to manages errors
+                    Err(_) => (),
+                    Ok(_) => (),
+                };
+            }
+            Err(_) => (), // TODO: manage errors
+        }
+        match is_alive.try_lock() {
             Err(_) => (),
-            Ok(_) => (),
-        };
+            Ok(is_alive) => {
+                if !*is_alive {
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -169,7 +205,7 @@ impl Drop for RunningProcess {
         // If they exist, close the pipes
         match self.stdin.take() {
             Some(pipe) => drop(pipe),
-            None => (),
+            None => println!("no input pipe to close"),
         }
         match self.stdout.take() {
             Some(pipe) => drop(pipe),
@@ -178,6 +214,12 @@ impl Drop for RunningProcess {
         match self.stderr.take() {
             Some(pipe) => drop(pipe),
             None => (),
+        }
+        // The guard will release the access only when it goes out of scope
+        // This code is inside a block because we need to free the gurad
+        {
+            let mut is_alive = self.is_alive.lock().unwrap();
+            *is_alive = false;
         }
         // Use the handles to wait for the end of each thread
         match self.handle_input.take() {
