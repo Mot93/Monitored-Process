@@ -163,7 +163,7 @@ fn send_input(mut stdin: ChildStdin, in_recieve: mpsc::Receiver<String>) {
     }
 }
 
-// Implementing what happen when the dtruct is removed from the memory
+// Implementing what happen when the struct is removed from the memory
 impl Drop for RunningProcess {
     fn drop(&mut self) {
         // If they exist, close the pipes
@@ -180,9 +180,9 @@ impl Drop for RunningProcess {
             None => (),
         }
         // Use the handles to wait for the end of each thread
-        println!("waiting");
         match self.handle_input.take() {
             Some(handle) => {
+                println!("Joining input");
                 match handle.join() {
                     Ok(_) => println!("Input thread stopped"),
                     Err(_) => println!("Could not join the input thread"),
@@ -192,6 +192,7 @@ impl Drop for RunningProcess {
         }
         match self.handle_output.take() {
             Some(handle) => {
+                println!("Joining output");
                 match handle.join() {
                     Ok(_) => println!("Output thread stopped"),
                     Err(_) => println!("Could not join the output thread"),
@@ -201,6 +202,7 @@ impl Drop for RunningProcess {
         }
         match self.handle_error.take() {
             Some(handle) => {
+                println!("Joining error");
                 match handle.join() {
                     Ok(_) => println!("Input thread stopped"),
                     Err(_) => println!("Could not join the error thread"),
