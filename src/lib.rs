@@ -116,8 +116,8 @@ impl RunningProcess {
     /// Kills the process if it's still running
     pub fn kill(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // TODO: manage lock
-        let mut is_alive = self.is_alive().lock().unwrap();
-        is_alive = false;
+        let mut is_alive = self.is_alive.lock().unwrap();
+        *is_alive = false;
         Ok(self.process.kill()?)
     }
 
