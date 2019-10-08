@@ -3,6 +3,8 @@ use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
+pub mod utils;
+
 /// Struct containing the necessary to manage the process
 pub struct RunningProcess {
     process: Child,
@@ -147,58 +149,6 @@ impl RunningProcess {
     }
 } // impl RunninProcess
 
-/// Collect all the stdout/stderr of a process and place it in the channel sender it has recived
-/// It's meant to be executed by a thread
-// TODO: mange errors
-fn gather_output<T: Read>(std: T, pipe_send: mpsc::Sender<String>) {
-    for line in BufReader::new(std).lines() {
-        // Catching all lines
-        match line {
-            // Managing if there was a problem reading a line
-            Err(_) => (), // TODO: manage this possible error
-
-            Ok(l) => {
-                match pipe_send.send(l) {
-                    // Managing if coudnt send a line
-                    // For now we will assume that if there is an error is because the pipe was closed
-                    Err(_) => break, // TODO: manage this possible error, if it doesn't work, the pipe is closed? https://doc.rust-lang.org/std/sync/mpsc/struct.RecvError.html
-                    Ok(_) => (),     // Success
-                }
-            }
-        }
-    } // end for
-    println!("closed reciever");
-}
-
-/// Recieve the stdin of the process and feeds it into the process
-/// It's meant to be executed by a thread
-fn send_input(
-    mut stdin: ChildStdin,
-    in_recieve: mpsc::Receiver<String>,
-    is_alive: Arc<Mutex<bool>>,
-) {
-    loop {
-        match in_recieve.try_recv() {
-            Ok(recieved) => {
-                match stdin.write_all(recieved.as_bytes()) {
-                    // TODO: need to manages errors
-                    Err(_) => (),
-                    Ok(_) => (),
-                };
-            }
-            Err(_) => (), // TODO: manage errors
-        }
-        match is_alive.try_lock() {
-            Err(_) => (),
-            Ok(is_alive) => {
-                if !*is_alive {
-                    break;
-                }
-            }
-        }
-    }
-}
-
 // Implementing what happen when the struct is removed from the memory
 impl Drop for RunningProcess {
     fn drop(&mut self) {
@@ -251,6 +201,62 @@ impl Drop for RunningProcess {
                 };
             }
             None => (),
+        }
+    }
+}// Drop
+
+/// Collect all the stdout/stderr of a process and place it in the channel sender it has recived
+/// It's meant to be executed by a thread
+// TODO: mange errors
+fn gather_output<T: Read>(std: T, pipe_send: mpsc::Sender<String>) {
+    for line in BufReader::new(std).lines() {
+        // Catching all lines
+        match line {
+            // Managing if there was a problem reading a line
+            Err(_) => (), // TODO: manage this possible error
+
+            Ok(l) => {
+                match pipe_send.send(l) {
+                    // Managing if coudnt send a line
+                    // For now we will assume that if there is an error is because the pipe was closed
+                    Err(_) => break, // TODO: manage this possible error, if it doesn't work, the pipe is closed? https://doc.rust-lang.org/std/sync/mpsc/struct.RecvError.html
+                    Ok(_) => (),     // Success
+                }
+            }
+        }
+    } // end for
+    println!("closed reciever");
+}
+
+/// Recieve the stdin of the process and feeds it into the process
+/// It's meant to be executed by a thread
+fn send_input(
+    mut stdin: ChildStdin,
+    in_recieve: mpsc::Receiver<String>,
+    is_alive: Arc<Mutex<bool>>,
+) {
+    loop {
+        match in_recieve.try_recv() {
+            Ok(recieved) => {
+                match stdin.write_all(recieved.as_bytes()) {
+                    // TODO: need to manages errors
+                    Err(_) => (),
+                    Ok(_) => (),
+                };
+            }
+            Err(e) => {
+                if e == mpsc::TryRecvError::Disconnected {
+                    break;
+                };
+            }, // TODO: manage errors
+        }
+        match is_alive.try_lock() {
+            Err(_) => (),
+            Ok(is_alive) => {
+                if !*is_alive {
+                    break;
+                }
+            }
         }
     }
 }
