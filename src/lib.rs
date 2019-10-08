@@ -209,13 +209,16 @@ impl Drop for RunningProcess {
 /// It's meant to be executed by a thread
 // TODO: mange errors
 fn gather_output<T: Read>(std: T, pipe_send: mpsc::Sender<String>) {
+    println!("ciao");
     for line in BufReader::new(std).lines() {
         // Catching all lines
+        println!("wtf");
         match line {
             // Managing if there was a problem reading a line
             Err(_) => (), // TODO: manage this possible error
 
             Ok(l) => {
+                println!("out app: {}", l);
                 match pipe_send.send(l) {
                     // Managing if coudnt send a line
                     // For now we will assume that if there is an error is because the pipe was closed
