@@ -1,4 +1,4 @@
-use crate::millisec_pause;
+use crate::MILLISEC_PAUSE;
 
 use std::io::{BufRead, BufReader, Write};
 use std::sync::{mpsc, Arc, Mutex};
@@ -24,7 +24,6 @@ pub fn stdin_pipes(stdin: std::io::Stdin, pipes: Arc<Mutex<Vec<mpsc::Sender<Stri
                         for i in 0..vec.len() {
                             match vec[i].send(line.clone()) {
                                 Err(e) => {
-                                    println!("Error sending in stdin pipe: {}", e);
                                     erase.push(i);
                                 }
                                 Ok(_) => (),
@@ -76,7 +75,7 @@ pub fn piped_mpsc(
             Ok(_) => (),
         }
         // Don't want to overcumber the system with too many requests
-        thread::sleep(Duration::from_millis(millisec_pause));
+        thread::sleep(Duration::from_millis(MILLISEC_PAUSE));
     } // loop
 } // piped_mpsc
 
@@ -98,6 +97,6 @@ pub fn print_std<T: Write>(mut std: T, pipe: mpsc::Receiver<String>) {
             },
         };
         // Don't want to overcumber the system with too many requests
-        thread::sleep(Duration::from_millis(millisec_pause));
+        thread::sleep(Duration::from_millis(MILLISEC_PAUSE));
     }
 } // print_std

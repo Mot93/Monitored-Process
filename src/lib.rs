@@ -7,21 +7,18 @@ use std::time::Duration;
 pub mod utils;
 
 // Const to share among the library to manage how fast everything is updated witouth overloading the system
-pub const millisec_pause: u64 = 100;
+pub const MILLISEC_PAUSE: u64 = 100;
 
 /// Struct containing the necessary to manage the process
 pub struct RunningProcess {
     process: Child,
-    /// Pipe that recieve the process stdout
-    pub stdout: Option<mpsc::Receiver<String>>,
+    stdout_pipe: Option<Arc<Mutex<Vec<mpsc::Sender<String>>>>>,
     handle_output: Option<thread::JoinHandle<()>>,
-    /// Pipe that recieve the process stderr
-    pub stderr: Option<mpsc::Receiver<String>>,
+    stderr_pipe: Option<Arc<Mutex<Vec<mpsc::Sender<String>>>>>,
     handle_error: Option<thread::JoinHandle<()>>,
-    ///
-    pub stdin: Option<mpsc::Sender<String>>,
+    stdin_pipe: Option<mpsc::Sender<String>>,
     handle_input: Option<thread::JoinHandle<()>>,
-    /// shared state about the current state of the process life
+    // shared state about the current state of the process life
     is_alive: Arc<Mutex<bool>>,
 }
 
@@ -64,11 +61,13 @@ impl RunningProcess {
         let (out_recieve, handle_out) = match child.stdout.take() {
             None => (None, None), // TODO: return Error, not None
             Some(stdout) => {
-                let (out_send, out_recieve) = mpsc::channel();
+                let out_send: Arc<Mutex<Vec<mpsc::Sender<String>>>> =
+                    Arc::new(Mutex::new(Vec::new()));
+                let out_send_arc = Arc::clone(&out_send);
                 let handle_out = thread::spawn(move || {
                     gather_output(stdout, out_send);
                 });
-                (Some(out_recieve), Some(handle_out))
+                (Some(out_send_arc), Some(handle_out))
             }
         };
         /* Passing the stderr of the process to a thread whose sole purpose is to gather it and send it in the channel that it was given
@@ -79,11 +78,13 @@ impl RunningProcess {
         let (err_recieve, handle_err) = match child.stderr.take() {
             None => (None, None), // TODO: return Error, not None
             Some(stderr) => {
-                let (err_send, err_recieve) = mpsc::channel();
+                let err_send: Arc<Mutex<Vec<mpsc::Sender<String>>>> =
+                    Arc::new(Mutex::new(Vec::new()));
+                let err_send_out = Arc::clone(&err_send);
                 let handle_err = thread::spawn(move || {
                     gather_output(stderr, err_send);
                 });
-                (Some(err_recieve), Some(handle_err))
+                (Some(err_send_out), Some(handle_err))
             }
         };
         /* Passing the stdin of the process to a thread whose sole purpose is to recive the stdin from a channel that it was given
@@ -109,11 +110,11 @@ impl RunningProcess {
         // Returning struct
         Ok(RunningProcess {
             process: child,
-            stdout: out_recieve,
+            stdout_pipe: out_recieve,
             handle_output: handle_out,
-            stderr: err_recieve,
+            stderr_pipe: err_recieve,
             handle_error: handle_err,
-            stdin: in_send,
+            stdin_pipe: in_send,
             handle_input: handle_in,
             is_alive: is_alive,
         })
@@ -151,23 +152,64 @@ impl RunningProcess {
         };
         result
     }
+
+    /// Return a pointer Arc to the stdin pipe
+    pub fn input_pipe(&self) -> Result<mpsc::Sender<String>, Box<dyn std::error::Error>> {
+        match self.stdin_pipe {
+            None => panic!("No input pipe"),
+            Some(ref pipe) => Ok(pipe.clone()),
+        }
+    }
+
+    /// Return a pointer Arc to the stdout pipe
+    pub fn output_pipe(&mut self) -> Result<mpsc::Receiver<String>, Box<dyn std::error::Error>> {
+        match &self.stdout_pipe {
+            None => panic!("No out pipe"),
+            Some(locked_vec) => {
+                let (new_sender, new_reciever) = mpsc::channel();
+                match locked_vec.lock() {
+                    Err(_) => panic!("No locked"),
+                    Ok(mut vec) => {
+                        vec.push(new_sender);
+                        Ok(new_reciever)
+                    }
+                }
+            }
+        }
+    }
+    /// Return a pointer Arc to the stderr pipe
+    pub fn err_pipe(&mut self) -> Result<mpsc::Receiver<String>, Box<dyn std::error::Error>> {
+        match &self.stderr_pipe {
+            None => panic!("No out pipe"),
+            Some(locked_vec) => {
+                let (new_sender, new_reciever) = mpsc::channel();
+                match locked_vec.lock() {
+                    Err(_) => panic!("No locked"),
+                    Ok(mut vec) => {
+                        vec.push(new_sender);
+                        Ok(new_reciever)
+                    }
+                }
+            }
+        }
+    }
 } // impl RunninProcess
 
 // Implementing what happen when the struct is removed from the memory
 impl Drop for RunningProcess {
     fn drop(&mut self) {
         // If they exist, close the pipes
-        match self.stdin.take() {
+        match self.stdin_pipe.take() {
             Some(pipe) => drop(pipe),
             None => println!("no input pipe to close"),
         }
-        match self.stdout.take() {
+        match self.stdout_pipe.take() {
             Some(pipe) => drop(pipe),
-            None => (),
+            None => println!("no output pipe to close"),
         }
-        match self.stderr.take() {
+        match self.stderr_pipe.take() {
             Some(pipe) => drop(pipe),
-            None => (),
+            None => println!("no err pipe to close"),
         }
         // The guard will release the access only when it goes out of scope
         // This code is inside a block because we need to free the gurad
@@ -212,7 +254,7 @@ impl Drop for RunningProcess {
 /// Collect all the stdout/stderr of a process and place it in the channel sender it has recived
 /// It's meant to be executed by a thread
 // TODO: mange errors
-fn gather_output<T: Read>(std: T, pipe_send: mpsc::Sender<String>) {
+fn gather_output<T: Read>(std: T, pipes_send: Arc<Mutex<Vec<mpsc::Sender<String>>>>) {
     for line in BufReader::new(std).lines() {
         // Catching all lines
         match line {
@@ -220,14 +262,25 @@ fn gather_output<T: Read>(std: T, pipe_send: mpsc::Sender<String>) {
             Err(_) => (), // TODO: manage this possible error
 
             Ok(l) => {
-                match pipe_send.send(l) {
-                    // Managing if coudnt send a line
-                    // For now we will assume that if there is an error is because the pipe was closed
-                    Err(_) => break, // TODO: manage this possible error, if it doesn't work, the pipe is closed? https://doc.rust-lang.org/std/sync/mpsc/struct.RecvError.html
-                    Ok(_) => (),     // Success
-                }
+                match pipes_send.lock() {
+                    Err(e) => panic!("Cant' get lock: {}", e),
+                    Ok(mut pipes) => {
+                        let mut erase: Vec<usize> = Vec::new();
+                        for i in 0..pipes.len() {
+                            match pipes[i].send(l.clone()) {
+                                Ok(_) => (),
+                                Err(e) => {
+                                    erase.push(i);
+                                }
+                            };
+                        }
+                        for i in erase {
+                            pipes.remove(i);
+                        }
+                    }
+                };
             }
-        }
+        };
     } // end for
 }
 
@@ -265,14 +318,14 @@ fn send_input(
             }
         }
         // Don't want to overcumber the system with too many requests
-        thread::sleep(Duration::from_millis(millisec_pause));
+        thread::sleep(Duration::from_millis(MILLISEC_PAUSE));
     } // loop
 } // send_input
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Tests
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-#[cfg(test)]
+/*#[cfg(test)]
 mod test {
 
     use super::*;
@@ -317,3 +370,4 @@ mod test {
         }
     } // echo_test
 } // Tests
+*/
