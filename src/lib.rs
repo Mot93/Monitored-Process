@@ -2,8 +2,12 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 pub mod utils;
+
+// Const to share among the library to manage how fast everything is updated witouth overloading the system
+pub const millisec_pause: u64 = 100;
 
 /// Struct containing the necessary to manage the process
 pub struct RunningProcess {
@@ -203,22 +207,19 @@ impl Drop for RunningProcess {
             None => (),
         }
     }
-}// Drop
+} // Drop
 
 /// Collect all the stdout/stderr of a process and place it in the channel sender it has recived
 /// It's meant to be executed by a thread
 // TODO: mange errors
 fn gather_output<T: Read>(std: T, pipe_send: mpsc::Sender<String>) {
-    println!("ciao");
     for line in BufReader::new(std).lines() {
         // Catching all lines
-        println!("wtf");
         match line {
             // Managing if there was a problem reading a line
             Err(_) => (), // TODO: manage this possible error
 
             Ok(l) => {
-                println!("out app: {}", l);
                 match pipe_send.send(l) {
                     // Managing if coudnt send a line
                     // For now we will assume that if there is an error is because the pipe was closed
@@ -228,10 +229,9 @@ fn gather_output<T: Read>(std: T, pipe_send: mpsc::Sender<String>) {
             }
         }
     } // end for
-    println!("closed reciever");
 }
 
-/// Recieve the stdin of the process and feeds it into the process
+/// Recieve all the input that has to be feed to the stdin of the process via a mpsc::Reciever
 /// It's meant to be executed by a thread
 fn send_input(
     mut stdin: ChildStdin,
@@ -248,11 +248,14 @@ fn send_input(
                 };
             }
             Err(e) => {
+                // Exit the loop if the other end of the channel hab been closed
                 if e == mpsc::TryRecvError::Disconnected {
                     break;
                 };
-            }, // TODO: manage errors
+            } // TODO: manage errors
         }
+        // Check if the process is alive
+        // Checking if the reciving pipe is open is not enought because the recieving pipe isn't always closed
         match is_alive.try_lock() {
             Err(_) => (),
             Ok(is_alive) => {
@@ -261,8 +264,10 @@ fn send_input(
                 }
             }
         }
-    }
-}
+        // Don't want to overcumber the system with too many requests
+        thread::sleep(Duration::from_millis(millisec_pause));
+    } // loop
+} // send_input
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Tests
